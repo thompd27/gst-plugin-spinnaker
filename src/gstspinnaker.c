@@ -96,7 +96,7 @@ GST_STATIC_PAD_TEMPLATE ("src",
     GST_PAD_SRC,
     GST_PAD_ALWAYS,
 				GST_STATIC_CAPS (GST_VIDEO_CAPS_MAKE
-						("{ RGB }"))
+						("{ RGBA }"))
     );
 /*
 static GstStaticPadTemplate gst_spinnaker_src_template =
@@ -325,25 +325,25 @@ gst_spinnaker_start (GstBaseSrc * src)
   EXEANDCHECK(spinSystemGetInstance(&hSystem));
 
   // Retrieve list of cameras from the system
-  spinCameraList hCameraList = NULL;
+  //spinCameraList hCameraList = NULL;
 
-  EXEANDCHECK(spinCameraListCreateEmpty(&hCameraList));
+  EXEANDCHECK(spinCameraListCreateEmpty(&spinnaker->hCameraList));
 
-  EXEANDCHECK(spinSystemGetCameras(hSystem, hCameraList));
+  EXEANDCHECK(spinSystemGetCameras(hSystem, spinnaker->hCameraList));
 
   // Retrieve number of cameras
   size_t numCameras = 0;
 
-  EXEANDCHECK(spinCameraListGetSize(hCameraList, &numCameras));
+  EXEANDCHECK(spinCameraListGetSize(spinnaker->hCameraList, &numCameras));
 
 	// display error when no camera has been found
 	if (numCameras==0){
 		GST_ERROR_OBJECT(src, "No Flycapture device found.");
 		
     // Clear and destroy camera list before releasing system
-    EXEANDCHECK(spinCameraListClear(hCameraList));
+    EXEANDCHECK(spinCameraListClear(spinnaker->hCameraList));
 
-    EXEANDCHECK(spinCameraListDestroy(hCameraList));
+    EXEANDCHECK(spinCameraListDestroy(spinnaker->hCameraList));
 
     // Release system
     EXEANDCHECK(spinSystemReleaseInstance(hSystem));
@@ -354,7 +354,7 @@ gst_spinnaker_start (GstBaseSrc * src)
 // Select camera
 spinnaker->hCamera = NULL;
 
-EXEANDCHECK(spinCameraListGet(hCameraList, 0, &spinnaker->hCamera));
+EXEANDCHECK(spinCameraListGet(spinnaker->hCameraList, 0, &spinnaker->hCamera));
 EXEANDCHECK(spinCameraInit(spinnaker->hCamera));
   //GstVideoInfo vinfo;
   //GstCaps * filter;
@@ -373,7 +373,7 @@ EXEANDCHECK(spinCameraInit(spinnaker->hCamera));
     //} else {
      // return FALSE;
     //}
-spinnaker->gst_stride = 4000 * 3;
+spinnaker->gst_stride = 4000 * 4;
 spinnaker->nHeight = 3000;
 EXEANDCHECK(spinCameraBeginAcquisition(spinnaker->hCamera));
 
@@ -382,9 +382,9 @@ EXEANDCHECK(spinCameraBeginAcquisition(spinnaker->hCamera));
   fail:
 
     // Clear and destroy camera list before releasing system
-    spinCameraListClear(hCameraList);
+    spinCameraListClear(spinnaker->hCameraList);
 
-    spinCameraListDestroy(hCameraList);
+    spinCameraListDestroy(spinnaker->hCameraList);
 
     // Release system
     spinSystemReleaseInstance(hSystem);
@@ -403,12 +403,12 @@ gst_spinnaker_stop (GstBaseSrc * src)
 
     // Retrieve singleton reference to system object
   spinSystem hSystem = NULL;
-  spinCameraList hCameraList = NULL;
+  //spinCameraList hCameraList = NULL;
 
   EXEANDCHECK(spinSystemGetInstance(&hSystem));
-  EXEANDCHECK(spinSystemGetCameras(hSystem, hCameraList));
-  EXEANDCHECK(spinCameraListClear(hCameraList));
-  EXEANDCHECK(spinCameraListDestroy(hCameraList));
+  EXEANDCHECK(spinSystemGetCameras(hSystem, spinnaker->hCameraList));
+  EXEANDCHECK(spinCameraListClear(spinnaker->hCameraList));
+  EXEANDCHECK(spinCameraListDestroy(spinnaker->hCameraList));
   EXEANDCHECK(spinSystemReleaseInstance(hSystem));
   return TRUE;
 
@@ -565,8 +565,8 @@ copy_duplicate_data(GstBaseSrc * src, GstMapInfo *minfo)
     EXEANDCHECK(spinImageGetData(spinnaker->convertedImage, data));
     GST_DEBUG_OBJECT(spinnaker, "image is %d bytes", imageSize);
 
-    spinnaker->nPitch = 3 * 4000;
-    spinnaker->gst_stride = 3 * 4000;
+    spinnaker->nPitch = 4 * 4000;
+    spinnaker->gst_stride = 4 * 4000;
     spinnaker->nHeight = 3000;
 		for (i = 0; i < spinnaker->nHeight; i++) {
 			memcpy (minfo->data + i * spinnaker->gst_stride, *data + i * spinnaker->nPitch, spinnaker->nPitch);
@@ -603,13 +603,13 @@ gst_spinnaker_create (GstBaseSrc * src, guint64 offset, guint size,
 
   
   //convert image to RGB
-  EXEANDCHECK(spinImageConvert(hResultImage, PixelFormat_RGB8, spinnaker->convertedImage));
+  EXEANDCHECK(spinImageConvert(hResultImage, PixelFormat_RGBa8, spinnaker->convertedImage));
   //spinImageSave(spinnaker->convertedImage, "demo.jpg", JPEG);
   EXEANDCHECK(spinImageRelease(hResultImage));
 
   // Create a new buffer for the image
   //*buf = gst_buffer_new_and_alloc (spinnaker->nHeight * spinnaker->gst_stride);
-  *buf = gst_buffer_new_and_alloc (3000 * 4000 * 3);
+  *buf = gst_buffer_new_and_alloc (3000 * 4000 * 4);
 
   gst_buffer_map (*buf, &minfo, GST_MAP_WRITE);
 

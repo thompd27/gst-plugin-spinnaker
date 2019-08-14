@@ -41,7 +41,8 @@ struct _GstSpinnaker
   GstBaseSrc base_spinnaker;
   spinCamera hCamera;
   spinImage convertedImage;
-
+  spinCameraList hCameraList;
+  
   unsigned int nWidth;
   unsigned int nHeight;
   unsigned int nBitsPerPixel;
