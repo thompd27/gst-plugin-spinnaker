@@ -80,36 +80,13 @@ static void gst_spinnaker_src_reset (GstSpinnakerSrc * src);
 enum
 {
 	PROP_0,
-	PROP_CAMERAPRESENT,
-	PROP_EXPOSURE,
-	PROP_PIXELCLOCK,
-	PROP_GAIN,
-	PROP_BLACKLEVEL,
-	PROP_RGAIN,
-	PROP_GGAIN,
-	PROP_BGAIN,
-	PROP_BINNING,
-	PROP_SHARPNESS,
-	PROP_SATURATION,
-	PROP_WHITEBALANCE,
-	PROP_WB_ONEPUSHINPROGRESS,
-	PROP_LUT,
-	PROP_LUT1_OFFSET_R,
-	PROP_LUT1_OFFSET_G,
-	PROP_LUT1_OFFSET_B,
-	PROP_LUT1_GAMMA,
-	PROP_LUT1_GAIN,
-	PROP_LUT2_OFFSET_R,
-	PROP_LUT2_OFFSET_G,
-	PROP_LUT2_OFFSET_B,
-	PROP_LUT2_GAMMA,
-	PROP_LUT2_GAIN,
-	PROP_MAXFRAMERATE
+	PROP_CAMERA
 };
 
 #define	FLYCAP_UPDATE_LOCAL  FALSE
 #define	FLYCAP_UPDATE_CAMERA TRUE
 
+#define DEFAULT_PROP_CAMERA	           0
 #define DEFAULT_PROP_EXPOSURE           40.0
 #define DEFAULT_PROP_GAIN               1
 #define DEFAULT_PROP_BLACKLEVEL         15
@@ -136,14 +113,26 @@ enum
 // Put matching type text in the pad template below
 
 // pad template
+
 static GstStaticPadTemplate gst_spinnaker_src_template =
 		GST_STATIC_PAD_TEMPLATE ("src",
 				GST_PAD_SRC,
 				GST_PAD_ALWAYS,
 				GST_STATIC_CAPS (GST_VIDEO_CAPS_MAKE
-						("{ BGR }"))
+						("{ GRAY8 }"))
 		);
-
+		/*
+static GstStaticPadTemplate gst_spinnaker_src_template =
+GST_STATIC_PAD_TEMPLATE ("src",
+    GST_PAD_SRC,
+    GST_PAD_ALWAYS,
+    GST_STATIC_CAPS ("video/x-bayer, "
+		"format = (string) { rggb }, "
+        "width = (int) [ 16, 65535 ], "
+        "height = (int) [ 16, 65535 ], "
+        "framerate = (fraction) [ 0/1, MAX ]")
+    );
+*/
 #define EXEANDCHECK(function) \
 {\
 	spinError Ret = function;\
@@ -197,6 +186,10 @@ gst_spinnaker_src_class_init (GstSpinnakerSrcClass * klass)
 	gstpushsrc_class->fill   = GST_DEBUG_FUNCPTR (gst_spinnaker_src_fill);
 	GST_DEBUG ("Using gst_spinnaker_src_fill.");
 #endif
+	//camera id property
+	g_object_class_install_property (gobject_class, PROP_CAMERA,
+		g_param_spec_int("camera-id", "Camera ID", "Camera ID to open.", 0,7, DEFAULT_PROP_CAMERA,
+		 (GParamFlags) (G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS | GST_PARAM_MUTABLE_PLAYING)));
 }
 
 static void
@@ -204,16 +197,18 @@ init_properties(GstSpinnakerSrc * src)
 {
     //Hardcoded hot-garbage **************************
   src->nWidth = 4000;
-	src->nHeight = 3000;
-	src->nRawWidth = 4000;
-	src->nRawHeight = 3000;
-  src->nBytesPerPixel = 4;
+  src->nHeight = 3000;
+  src->nRawWidth = 4000;
+  src->nRawHeight = 3000;
+  src->nBytesPerPixel = 1;
   src->binning = 1;
   src->n_frames = 0;
   src->framerate = 31;
   src->last_frame_time = 0;
   src->nPitch = src->nWidth * src->nBytesPerPixel;
-	src->nRawPitch = src->nRawWidth * src->nBytesPerPixel;
+  src->nRawPitch = src->nRawWidth * src->nBytesPerPixel;
+  src->gst_stride = src->nPitch;
+  src->cameraID = DEFAULT_PROP_CAMERA;
 
 }
 
@@ -237,6 +232,10 @@ gst_spinnaker_src_reset (GstSpinnakerSrc * src)
 	src->n_frames = 0;
 	src->total_timeouts = 0;
 	src->last_frame_time = 0;
+	src->cameraID = 0;
+	src->hCamera = NULL;
+	src->hCameraList = NULL;
+	src->cameraPresent = FALSE;
 }
 
 void
@@ -246,6 +245,16 @@ gst_spinnaker_src_set_property (GObject * object, guint property_id,
 	GstSpinnakerSrc *src;
 
 	src = GST_SPINNAKER_SRC (object);
+
+	switch(property_id) {
+	case PROP_CAMERA:
+		src->cameraID = g_value_get_int (value);
+		GST_DEBUG_OBJECT (src, "camera id: %d", src->cameraID);
+		break;
+	default:
+		G_OBJECT_WARN_INVALID_PROPERTY_ID (object, property_id, pspec);
+		break;
+	}
 }
 
 void
@@ -331,7 +340,7 @@ gst_spinnaker_src_start (GstBaseSrc * bsrc)
   // Select camera
   src->hCamera = NULL;
 
-  EXEANDCHECK(spinCameraListGet(src->hCameraList, 0, &src->hCamera));
+  EXEANDCHECK(spinCameraListGet(src->hCameraList, src->cameraID, &src->hCamera));
   EXEANDCHECK(spinCameraInit(src->hCamera));
     //GstVideoInfo vinfo;
     //GstCaps * filter;
@@ -350,8 +359,8 @@ gst_spinnaker_src_start (GstBaseSrc * bsrc)
       //} else {
       // return FALSE;
       //}
-  src->gst_stride = 4000 * 4;
-  src->nHeight = 3000;
+  //src->gst_stride = 4000 * 4;
+  //src->nHeight = 3000;
   EXEANDCHECK(spinCameraBeginAcquisition(src->hCamera));
 	// NOTE:
 	// from now on, the "deviceContext" handle can be used to access the camera board.
@@ -382,7 +391,8 @@ gst_spinnaker_src_stop (GstBaseSrc * bsrc)
 
 	GST_DEBUG_OBJECT (src, "stop");
   EXEANDCHECK(spinCameraEndAcquisition(src->hCamera));
-
+  EXEANDCHECK(spinCameraDeInit(src->hCamera));
+  EXEANDCHECK(spinCameraRelease(src->hCamera));
     // Retrieve singleton reference to system object
   spinSystem hSystem = NULL;
   //spinCameraList hCameraList = NULL;
@@ -394,7 +404,7 @@ gst_spinnaker_src_stop (GstBaseSrc * bsrc)
   EXEANDCHECK(spinSystemReleaseInstance(hSystem));
 
 	gst_spinnaker_src_reset (src);
-
+	return TRUE;
 	fail:   // Needed for FLYCAPEXECANDCHECK, does nothing in this case
 	return TRUE;
 }
@@ -469,7 +479,7 @@ gst_spinnaker_src_create (GstPushSrc * psrc, GstBuffer ** buf)
 	GstMapInfo minfo;
 
   spinImage hResultImage = NULL;
-  EXEANDCHECK(spinImageCreateEmpty(&src->convertedImage));
+  //EXEANDCHECK(spinImageCreateEmpty(&src->convertedImage));
   EXEANDCHECK(spinCameraGetNextImage(src->hCamera, &hResultImage));
 
   bool8_t isIncomplete = False;
@@ -479,25 +489,27 @@ gst_spinnaker_src_create (GstPushSrc * psrc, GstBuffer ** buf)
 
   
   //convert image to RGB
-  EXEANDCHECK(spinImageConvert(hResultImage, PixelFormat_BGR8, src->convertedImage));
+  //EXEANDCHECK(spinImageConvert(hResultImage, PixelFormat_RGB8, src->convertedImage));
   //spinImageSave(spinnaker->convertedImage, "demo.jpg", JPEG);
-  EXEANDCHECK(spinImageRelease(hResultImage));
+  //EXEANDCHECK(spinImageRelease(hResultImage));
 
   // Create a new buffer for the image
   //*buf = gst_buffer_new_and_alloc (spinnaker->nHeight * spinnaker->gst_stride);
-  *buf = gst_buffer_new_and_alloc (3000 * 4000 * 3);
+  *buf = gst_buffer_new_and_alloc (src->nHeight * src->nWidth * src->nBytesPerPixel);
 
   gst_buffer_map (*buf, &minfo, GST_MAP_WRITE);
   size_t imageSize;
-  EXEANDCHECK(spinImageGetBufferSize(src->convertedImage, &imageSize));
+  //EXEANDCHECK(spinImageGetBufferSize(src->convertedImage, &imageSize));
+  EXEANDCHECK(spinImageGetBufferSize(hResultImage, &imageSize));
 
   void **data;
   data = (void**)malloc(imageSize * sizeof(void*));
-  EXEANDCHECK(spinImageGetData(src->convertedImage, data));
+  //EXEANDCHECK(spinImageGetData(src->convertedImage, data));
+  EXEANDCHECK(spinImageGetData(hResultImage, data)); 
 
-  src->nPitch = 3 * 4000;
-  src->gst_stride = 3 * 4000;
-  src->nHeight = 3000;
+  //src->nPitch = 3 * 4000;
+  //src->gst_stride = 3 * 4000;
+  //src->nHeight = 3000;
   for (int i = 0; i < src->nHeight; i++) {
     	memcpy (minfo.data + i * src->gst_stride, *data + i * src->nPitch, src->nPitch);
   }
@@ -506,7 +518,8 @@ gst_spinnaker_src_create (GstPushSrc * psrc, GstBuffer ** buf)
 
 		// Normally this is commented out, useful for timing investigation
 		//overlay_param_changed(src, &minfo);
-    EXEANDCHECK(spinImageDestroy(src->convertedImage));
+		EXEANDCHECK(spinImageRelease(hResultImage));
+    //EXEANDCHECK(spinImageDestroy(src->convertedImage));
 		gst_buffer_unmap (*buf, &minfo);
 
     src->duration = 1000000000.0/src->framerate; 

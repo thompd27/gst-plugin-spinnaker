@@ -54,13 +54,14 @@ struct _GstSpinnakerSrc
 {
   GstPushSrc base_spinnaker_src;
   spinCamera hCamera;
-  spinImage convertedImage;
+  //spinImage convertedImage;
   spinCameraList hCameraList;
 
   // device
   gboolean cameraPresent;
   int lMemId;  // ID of the allocated memory
   unsigned int nWidth;
+  unsigned int cameraID;
   unsigned int nHeight;
   unsigned int nBitsPerPixel;
   unsigned int nBytesPerPixel;
