@@ -53,7 +53,8 @@ typedef enum
 struct _GstSpinnakerSrc
 {
   GstPushSrc base_spinnaker_src;
-  spinCamera hCamera;
+  //spinCamera hCamera;
+  spinSystem hSystem;
   //spinImage convertedImage;
   spinCameraList hCameraList;
 
@@ -68,9 +69,9 @@ struct _GstSpinnakerSrc
   unsigned int nPitch;   // Stride in bytes between lines
   unsigned int nImageSize;  // Image size in bytes
 
-  unsigned int nRawWidth;  // because of binning the raw image size may be smaller than nWidth
-  unsigned int nRawHeight;  // because of binning the raw image size may be smaller than nHeight
-  unsigned int nRawPitch;  // because of binning the raw image size may be smaller than nHeight
+  //unsigned int nRawWidth;  // because of binning the raw image size may be smaller than nWidth
+  //unsigned int nRawHeight;  // because of binning the raw image size may be smaller than nHeight
+  //unsigned int nRawPitch;  // because of binning the raw image size may be smaller than nHeight
 
   gint gst_stride;  // Stride/pitch for the GStreamer buffer
 

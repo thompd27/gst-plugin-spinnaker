@@ -1,2 +1,17 @@
 
 *.code-workspace
+aclocal.m4
+/autom4te.cache
+*.libs
+*.vscode
+src/libgstspinnaker_la-gstspinnaker.lo
+src/libgstspinnaker.la
+src/.deps/libgstspinnaker_la-gstspinnaker.Plo
+config.h.in~
+config.log
+config.status
+config.sub
+config.guess
+compile
+depcomp
+stamp-h1

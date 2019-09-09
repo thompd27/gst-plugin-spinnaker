@@ -1,6 +1,6 @@
-/* GStreamer Flycap Plugin
- * Copyright (C) 2015-2016 Gray Cancer Institute
- *
+/* GStreamer Spinnaker Plugin
+ * Copyright (C) 2019 Embry-Riddle Aeronautical University
+ * 
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Library General Public
  * License as published by the Free Software Foundation; either
@@ -16,19 +16,19 @@
  * Free Software Foundation, Inc., 51 Franklin Street, Suite 500,
  * Boston, MA 02110-1335, USA.
  *
- * Author: P Barber
+ * Author: D Thompson
  *
  */
 /**
  * SECTION:element-GstSpinnaker_src
  *
- * The flycapsrc element is a source for a USB 3 camera supported by the Point Grey Fly Capture SDK.
+ * The spinnakersrc element is a source for a USB 3 camera supported by the FLIR Spinnaker SDK.
  * A live source, operating in push mode.
  *
  * <refsect2>
  * <title>Example launch line</title>
  * |[
- * gst-launch-1.0 flycapsrc ! videoconvert ! autovideosink
+ * gst-launch-1.0 spinnakersrc ! videoconvert ! autovideosink
  * ]|
  * </refsect2>
  */
@@ -47,8 +47,6 @@
 #include <gst/gst.h>
 #include <gst/base/gstpushsrc.h>
 #include <gst/video/video.h>
-
-//#include "FlyCapture2_C.h"
 
 #include "gstspinnaker.h"
 
@@ -80,7 +78,9 @@ static void gst_spinnaker_src_reset (GstSpinnakerSrc * src);
 enum
 {
 	PROP_0,
-	PROP_CAMERA
+	PROP_CAMERA,
+	PROP_WIDTH,
+	PROP_HEIGHT
 };
 
 #define	FLYCAP_UPDATE_LOCAL  FALSE
@@ -107,13 +107,14 @@ enum
 #define DEFAULT_PROP_LUT2_GAIN		    1.501   
 #define DEFAULT_PROP_MAXFRAMERATE       25
 #define DEFAULT_PROP_GAMMA			    1.5
+#define DEFAULT_PROP_WIDTH 				4000
+#define DEFAULT_PROP_HEIGHT			    3000
 
-#define DEFAULT_GST_VIDEO_FORMAT GST_VIDEO_FORMAT_RGB
+#define DEFAULT_GST_VIDEO_FORMAT GST_VIDEO_FORMAT_GRAY8
 #define DEFAULT_FLYCAP_VIDEO_FORMAT FC2_PIXEL_FORMAT_RGB8
 // Put matching type text in the pad template below
 
 // pad template
-
 static GstStaticPadTemplate gst_spinnaker_src_template =
 		GST_STATIC_PAD_TEMPLATE ("src",
 				GST_PAD_SRC,
@@ -121,18 +122,7 @@ static GstStaticPadTemplate gst_spinnaker_src_template =
 				GST_STATIC_CAPS (GST_VIDEO_CAPS_MAKE
 						("{ GRAY8 }"))
 		);
-		/*
-static GstStaticPadTemplate gst_spinnaker_src_template =
-GST_STATIC_PAD_TEMPLATE ("src",
-    GST_PAD_SRC,
-    GST_PAD_ALWAYS,
-    GST_STATIC_CAPS ("video/x-bayer, "
-		"format = (string) { rggb }, "
-        "width = (int) [ 16, 65535 ], "
-        "height = (int) [ 16, 65535 ], "
-        "framerate = (fraction) [ 0/1, MAX ]")
-    );
-*/
+
 #define EXEANDCHECK(function) \
 {\
 	spinError Ret = function;\
@@ -146,10 +136,27 @@ G_DEFINE_TYPE_WITH_CODE (GstSpinnakerSrc, gst_spinnaker_src, GST_TYPE_PUSH_SRC,
     GST_DEBUG_CATEGORY_INIT (GST_CAT_DEFAULT, "spinnaker", 0,
         "debug category for spinnaker element"));
 
+// This function helps to check if a node is available and writable
+bool8_t IsAvailableAndWritable(spinNodeHandle hNode, char nodeName[])
+{
+    bool8_t pbAvailable = False;
+    spinError err = SPINNAKER_ERR_SUCCESS;
+    err = spinNodeIsAvailable(hNode, &pbAvailable);
+    if (err != SPINNAKER_ERR_SUCCESS)
+    {
+        printf("Unable to retrieve node availability (%s node), with error %d...\n\n", nodeName, err);
+    }
+
+    bool8_t pbWritable = False;
+    err = spinNodeIsWritable(hNode, &pbWritable);
+    if (err != SPINNAKER_ERR_SUCCESS)
+    {
+        printf("Unable to retrieve node writability (%s node), with error %d...\n\n", nodeName, err);
+    }
+    return pbWritable && pbAvailable;
+}
+
 /* class initialisation */
-
-//G_DEFINE_TYPE (GstSpinnakerSrc, gst_spinnaker_src, GST_TYPE_PUSH_SRC);
-
 static void
 gst_spinnaker_src_class_init (GstSpinnakerSrcClass * klass)
 {
@@ -196,17 +203,14 @@ static void
 init_properties(GstSpinnakerSrc * src)
 {
     //Hardcoded hot-garbage **************************
-  src->nWidth = 4000;
-  src->nHeight = 3000;
-  src->nRawWidth = 4000;
-  src->nRawHeight = 3000;
+  src->nWidth = DEFAULT_PROP_WIDTH;
+  src->nHeight = DEFAULT_PROP_HEIGHT;
   src->nBytesPerPixel = 1;
   src->binning = 1;
   src->n_frames = 0;
   src->framerate = 31;
   src->last_frame_time = 0;
   src->nPitch = src->nWidth * src->nBytesPerPixel;
-  src->nRawPitch = src->nRawWidth * src->nBytesPerPixel;
   src->gst_stride = src->nPitch;
   src->cameraID = DEFAULT_PROP_CAMERA;
 
@@ -233,9 +237,9 @@ gst_spinnaker_src_reset (GstSpinnakerSrc * src)
 	src->total_timeouts = 0;
 	src->last_frame_time = 0;
 	src->cameraID = 0;
-	src->hCamera = NULL;
 	src->hCameraList = NULL;
 	src->cameraPresent = FALSE;
+	src->hSystem = NULL;
 }
 
 void
@@ -246,15 +250,64 @@ gst_spinnaker_src_set_property (GObject * object, guint property_id,
 
 	src = GST_SPINNAKER_SRC (object);
 
+	spinImage hCamera = NULL;
+	spinNodeMapHandle hNodeMap = NULL;
+  	EXEANDCHECK(spinCameraListGet(src->hCameraList, src->cameraID, &hCamera));
+	EXEANDCHECK(spinCameraGetNodeMap(hCamera, &hNodeMap));
+	spinNodeHandle hWidth = NULL;
+	int64_t maxWidth = 0;
+	spinNodeHandle hHeight = NULL;
+	int64_t maxHeight = 0;
 	switch(property_id) {
 	case PROP_CAMERA:
 		src->cameraID = g_value_get_int (value);
 		GST_DEBUG_OBJECT (src, "camera id: %d", src->cameraID);
 		break;
+	case PROP_WIDTH:
+
+		EXEANDCHECK(spinNodeMapGetNode(hNodeMap, "Width", &hWidth));
+
+		// Retrieve maximum width
+		if (IsAvailableAndWritable(hWidth, "Width"))
+		{
+			EXEANDCHECK(spinIntegerGetMax(hWidth, &maxWidth));
+			int64_t param = g_value_get_int(value);
+			if (param > maxWidth){
+				EXEANDCHECK(spinIntegerSetValue(hWidth, maxWidth));
+				src->nWidth = maxWidth;
+			}
+			else {
+				EXEANDCHECK(spinIntegerSetValue(hWidth, param));
+				src->nWidth = param;
+			}
+		}
+		break;
+	case PROP_HEIGHT:
+
+		EXEANDCHECK(spinNodeMapGetNode(hNodeMap, "Height", &hHeight));
+
+		// Retrieve maximum width
+		if (IsAvailableAndWritable(hHeight, "Height"))
+		{
+			EXEANDCHECK(spinIntegerGetMax(hHeight, &maxHeight));
+			int64_t param = g_value_get_int(value);
+			if (param > maxHeight){
+				EXEANDCHECK(spinIntegerSetValue(hHeight, maxHeight));
+				src->nHeight = maxHeight;
+			}
+			else {
+				EXEANDCHECK(spinIntegerSetValue(hWidth, param));
+				src->nHeight = param;
+			}
+		}
+		break;
 	default:
 		G_OBJECT_WARN_INVALID_PROPERTY_ID (object, property_id, pspec);
 		break;
 	}
+
+	fail:
+	return;
 }
 
 void
@@ -296,31 +349,28 @@ gst_spinnaker_src_finalize (GObject * object)
 	G_OBJECT_CLASS (gst_spinnaker_src_parent_class)->finalize (object);
 }
 
+//queries camera devices and begins acquisition
 static gboolean
 gst_spinnaker_src_start (GstBaseSrc * bsrc)
 {
-	// Start will open the device but not start it, set_caps starts it, stop should stop and close it (as v4l2src)
-
 	GstSpinnakerSrc *src = GST_SPINNAKER_SRC (bsrc);
-  unsigned int numCameras = 0;
+    size_t numCameras = 0;
 
 	GST_DEBUG_OBJECT (src, "start");
-  spinError errReturn = SPINNAKER_ERR_SUCCESS;
-  spinError err = SPINNAKER_ERR_SUCCESS;
+	
+  	spinError errReturn = SPINNAKER_ERR_SUCCESS;
+  	spinError err = SPINNAKER_ERR_SUCCESS;
 
-  // Retrieve singleton reference to system object
-  spinSystem hSystem = NULL;
+	//grab system reference
+    EXEANDCHECK(spinSystemGetInstance(&src->hSystem));
 
-  EXEANDCHECK(spinSystemGetInstance(&hSystem));
-
-	// Turn on automatic timestamping, if so we do not need to do it manually, BUT there is some evidence that automatic timestamping is laggy
-//	gst_base_src_set_do_timestamp(bsrc, TRUE);
-  EXEANDCHECK(spinCameraListCreateEmpty(&src->hCameraList));
-
-  EXEANDCHECK(spinSystemGetCameras(hSystem, src->hCameraList));
-
-  EXEANDCHECK(spinCameraListGetSize(src->hCameraList, &numCameras));
-
+	//query available cameras
+    EXEANDCHECK(spinCameraListCreateEmpty(&src->hCameraList));
+	GST_DEBUG_OBJECT (src, "getting camera list");
+    EXEANDCHECK(spinSystemGetCameras(src->hSystem, src->hCameraList));
+	GST_DEBUG_OBJECT (src, "getting number of cameras");
+    EXEANDCHECK(spinCameraListGetSize(src->hCameraList, &numCameras));
+	
 	// display error when no camera has been found
 	if (numCameras==0){
 		GST_ERROR_OBJECT(src, "No Flycapture device found.");
@@ -331,37 +381,23 @@ gst_spinnaker_src_start (GstBaseSrc * bsrc)
     EXEANDCHECK(spinCameraListDestroy(src->hCameraList));
 
     // Release system
-    EXEANDCHECK(spinSystemReleaseInstance(hSystem));
+    EXEANDCHECK(spinSystemReleaseInstance(src->hSystem));
 
 		GST_ERROR_OBJECT(src, "No device found.");
 		goto fail;
 	}
 
-  // Select camera
-  src->hCamera = NULL;
+    // Select camera
+  	spinCamera hCamera = NULL;
+	GST_DEBUG_OBJECT (src, "selecting camera");
+    EXEANDCHECK(spinCameraListGet(src->hCameraList, src->cameraID, &hCamera));
+	GST_DEBUG_OBJECT (src, "initializing camera");
+    EXEANDCHECK(spinCameraInit(hCamera));
 
-  EXEANDCHECK(spinCameraListGet(src->hCameraList, src->cameraID, &src->hCamera));
-  EXEANDCHECK(spinCameraInit(src->hCamera));
-    //GstVideoInfo vinfo;
-    //GstCaps * filter;
-    //GstCaps *caps = gst_spinnaker_get_caps (src, filter);
-    //GstCaps * caps = gst_pad_get_pad_template_caps (GST_BASE_SRC_PAD (src));
-    //GstCaps * caps = GST_STATIC_CAPS ("video/x-raw, format=(string)RGB, height=(int)3000, width=(int)4000");
-    //GST_DEBUG_OBJECT (src, "The caps being set are %" GST_PTR_FORMAT, caps);
-
-    //gst_video_info_from_caps (&vinfo, caps);
-
-    //if (GST_VIDEO_INFO_FORMAT (&vinfo) != GST_VIDEO_FORMAT_UNKNOWN) {
-      //  g_assert (spinnaker->hCamera != NULL);
-        //  src->vrm_stride = get_pitch (src->device);  // wait for image to arrive for this
-        //spinnaker->gst_stride = GST_VIDEO_INFO_COMP_STRIDE (&vinfo, 0);
-        //spinnaker->nHeight = vinfo.height;
-      //} else {
-      // return FALSE;
-      //}
-  //src->gst_stride = 4000 * 4;
-  //src->nHeight = 3000;
-  EXEANDCHECK(spinCameraBeginAcquisition(src->hCamera));
+	//starts camera acquisition. Doesn't actually fill the gstreamer buffer. see create function
+	GST_DEBUG_OBJECT (src, "starting acquisition");
+    EXEANDCHECK(spinCameraBeginAcquisition(hCamera));
+	EXEANDCHECK(spinCameraRelease(hCamera));
 	// NOTE:
 	// from now on, the "deviceContext" handle can be used to access the camera board.
 	// use fc2DestroyContext to end the usage
@@ -377,35 +413,33 @@ gst_spinnaker_src_start (GstBaseSrc * bsrc)
     spinCameraListDestroy(src->hCameraList);
 
     // Release system
-    spinSystemReleaseInstance(hSystem);
+    spinSystemReleaseInstance(src->hSystem);
 
 	return FALSE;
 }
 
+//stops streaming and closes the camera
 static gboolean
 gst_spinnaker_src_stop (GstBaseSrc * bsrc)
 {
-	// Start will open the device but not start it, set_caps starts it, stop should stop and close it (as v4l2src)
-
 	GstSpinnakerSrc *src = GST_SPINNAKER_SRC (bsrc);
 
 	GST_DEBUG_OBJECT (src, "stop");
-  EXEANDCHECK(spinCameraEndAcquisition(src->hCamera));
-  EXEANDCHECK(spinCameraDeInit(src->hCamera));
-  EXEANDCHECK(spinCameraRelease(src->hCamera));
-    // Retrieve singleton reference to system object
-  spinSystem hSystem = NULL;
-  //spinCameraList hCameraList = NULL;
+	spinImage hCamera = NULL;
+	EXEANDCHECK(spinCameraListGet(src->hCameraList, src->cameraID, &hCamera));
+  	EXEANDCHECK(spinCameraEndAcquisition(hCamera));
+  	EXEANDCHECK(spinCameraDeInit(hCamera));
+  	EXEANDCHECK(spinCameraRelease(hCamera));
 
-  EXEANDCHECK(spinSystemGetInstance(&hSystem));
-  EXEANDCHECK(spinSystemGetCameras(hSystem, src->hCameraList));
-  EXEANDCHECK(spinCameraListClear(src->hCameraList));
-  EXEANDCHECK(spinCameraListDestroy(src->hCameraList));
-  EXEANDCHECK(spinSystemReleaseInstance(hSystem));
+	EXEANDCHECK(spinCameraListClear(src->hCameraList));
+	EXEANDCHECK(spinCameraListDestroy(src->hCameraList));
+	EXEANDCHECK(spinSystemReleaseInstance(src->hSystem));
 
 	gst_spinnaker_src_reset (src);
+	GST_DEBUG_OBJECT (src, "stop completed");
 	return TRUE;
-	fail:   // Needed for FLYCAPEXECANDCHECK, does nothing in this case
+
+	fail:  
 	return TRUE;
 }
 
@@ -415,8 +449,18 @@ gst_spinnaker_src_get_caps (GstBaseSrc * bsrc, GstCaps * filter)
 	GstSpinnakerSrc *src = GST_SPINNAKER_SRC (bsrc);
 	GstCaps *caps;
 
+	GstVideoInfo vinfo;
+
+	gst_video_info_init(&vinfo);
+
+	vinfo.width = src->nWidth;
+	vinfo.height = src->nHeight;
+	vinfo.fps_n = 0; //0 means variable FPS
+	vinfo.fps_d = 1;
+	vinfo.interlace_mode = GST_VIDEO_INTERLACE_MODE_PROGRESSIVE;
+	vinfo.finfo = gst_video_format_get_info(DEFAULT_GST_VIDEO_FORMAT);
   
-  caps = gst_pad_get_pad_template_caps (GST_BASE_SRC_PAD (src));
+	caps = gst_video_info_to_caps(&vinfo);
 
 	GST_DEBUG_OBJECT (src, "The caps are %" GST_PTR_FORMAT, caps);
 
@@ -426,35 +470,11 @@ gst_spinnaker_src_get_caps (GstBaseSrc * bsrc, GstCaps * filter)
 static gboolean
 gst_spinnaker_src_set_caps (GstBaseSrc * bsrc, GstCaps * caps)
 {
-	// Start will open the device but not start it, set_caps starts it, stop should stop and close it (as v4l2src)
-
 	GstSpinnakerSrc *src = GST_SPINNAKER_SRC (bsrc);
 	GstVideoInfo vinfo;
-	//GstStructure *s = gst_caps_get_structure (caps, 0);
-/*
-    if(src->acq_started == TRUE){
-		FLYCAPEXECANDCHECK(fc2StopCapture(src->deviceContext));
-		src->acq_started = FALSE;
-    }*/
 
+	//Currently using fixed caps
 	GST_DEBUG_OBJECT (src, "The caps being set are %" GST_PTR_FORMAT, caps);
-
-	//gst_video_info_from_caps (&vinfo, caps);
-
-/*
-	if (GST_VIDEO_INFO_FORMAT (&vinfo) != GST_VIDEO_FORMAT_UNKNOWN) {
-		g_assert (src->deviceContext != NULL);
-		//  src->vrm_stride = get_pitch (src->device);  // wait for image to arrive for this
-		src->gst_stride = GST_VIDEO_INFO_COMP_STRIDE (&vinfo, 0);
-		src->nHeight = vinfo.height;
-	} else {
-		goto unsupported_caps;
-	}*/
-
-	// start freerun/continuous capture
-	GST_DEBUG_OBJECT (src, "fc2StartCapture");
-	//EXEANDCHECK(spinCameraBeginAcquisition(src->hCamera));
-	GST_DEBUG_OBJECT (src, "fc2StartCapture COMPLETED");
 	src->acq_started = TRUE;
 
 	return TRUE;
@@ -466,11 +486,8 @@ gst_spinnaker_src_set_caps (GstBaseSrc * bsrc, GstCaps * caps)
 	fail:
 	return FALSE;
 }
-/*
-  for (i = 0; i < src->nHeight; i++) {
-    memcpy (minfo->data + i * src->gst_stride, src->convertedImage.pData + i * src->nPitch, src->nPitch);
-  }*/
-//  This can override the push class create fn, it is the same as fill above but it forces the creation of a buffer here to copy into.
+
+//Grabs next image from camera and puts it into a gstreamer buffer
 #ifdef OVERRIDE_CREATE
 static GstFlowReturn
 gst_spinnaker_src_create (GstPushSrc * psrc, GstBuffer ** buf)
@@ -478,71 +495,62 @@ gst_spinnaker_src_create (GstPushSrc * psrc, GstBuffer ** buf)
 	GstSpinnakerSrc *src = GST_SPINNAKER_SRC (psrc);
 	GstMapInfo minfo;
 
-  spinImage hResultImage = NULL;
-  //EXEANDCHECK(spinImageCreateEmpty(&src->convertedImage));
-  EXEANDCHECK(spinCameraGetNextImage(src->hCamera, &hResultImage));
+	//query camera and grab next image
+	spinImage hResultImage = NULL;
+	spinImage hCamera = NULL;
+	EXEANDCHECK(spinCameraListGet(src->hCameraList, src->cameraID, &hCamera));
+	EXEANDCHECK(spinCameraGetNextImage(hCamera, &hResultImage));
+	EXEANDCHECK(spinCameraRelease(hCamera));
 
-  bool8_t isIncomplete = False;
-  bool8_t hasFailed = False;
+	bool8_t isIncomplete = False;
+	bool8_t hasFailed = False;
 
-  EXEANDCHECK(spinImageIsIncomplete(hResultImage, &isIncomplete));
+	//check if image is complete 
+	//WARNING: This returns a boolean and is not handled if the image is incomplete
+	EXEANDCHECK(spinImageIsIncomplete(hResultImage, &isIncomplete));
 
-  
-  //convert image to RGB
-  //EXEANDCHECK(spinImageConvert(hResultImage, PixelFormat_RGB8, src->convertedImage));
-  //spinImageSave(spinnaker->convertedImage, "demo.jpg", JPEG);
-  //EXEANDCHECK(spinImageRelease(hResultImage));
+	// Create a new buffer for the image
+	*buf = gst_buffer_new_and_alloc (src->nHeight * src->nWidth * src->nBytesPerPixel);
 
-  // Create a new buffer for the image
-  //*buf = gst_buffer_new_and_alloc (spinnaker->nHeight * spinnaker->gst_stride);
-  *buf = gst_buffer_new_and_alloc (src->nHeight * src->nWidth * src->nBytesPerPixel);
+	gst_buffer_map (*buf, &minfo, GST_MAP_WRITE);
 
-  gst_buffer_map (*buf, &minfo, GST_MAP_WRITE);
-  size_t imageSize;
-  //EXEANDCHECK(spinImageGetBufferSize(src->convertedImage, &imageSize));
-  EXEANDCHECK(spinImageGetBufferSize(hResultImage, &imageSize));
+	size_t imageSize;
+	EXEANDCHECK(spinImageGetBufferSize(hResultImage, &imageSize));
 
-  void **data;
-  data = (void**)malloc(imageSize * sizeof(void*));
-  //EXEANDCHECK(spinImageGetData(src->convertedImage, data));
-  EXEANDCHECK(spinImageGetData(hResultImage, data)); 
+	//grab pointer to image data	
+	void *data;
+	EXEANDCHECK(spinImageGetData(hResultImage, &data)); 
 
-  //src->nPitch = 3 * 4000;
-  //src->gst_stride = 3 * 4000;
-  //src->nHeight = 3000;
-  for (int i = 0; i < src->nHeight; i++) {
-    	memcpy (minfo.data + i * src->gst_stride, *data + i * src->nPitch, src->nPitch);
-  }
-		//copy_duplicate_data(src, &minfo);
-		//copy_interpolate_data(src, &minfo);  // NOT WORKING, SEE ABOVE
+	//copy image data into gstreamer buffer
+	for (int i = 0; i < src->nHeight; i++) {
+		memcpy (minfo.data + i * src->gst_stride, data + i * src->nPitch, src->nPitch);
+	}
 
-		// Normally this is commented out, useful for timing investigation
-		//overlay_param_changed(src, &minfo);
-		EXEANDCHECK(spinImageRelease(hResultImage));
-    //EXEANDCHECK(spinImageDestroy(src->convertedImage));
-		gst_buffer_unmap (*buf, &minfo);
+	//release image and buffer
+	EXEANDCHECK(spinImageRelease(hResultImage));
+	gst_buffer_unmap (*buf, &minfo);
 
     src->duration = 1000000000.0/src->framerate; 
-		// If we do not use gst_base_src_set_do_timestamp() we need to add timestamps manually
-		src->last_frame_time += src->duration;   // Get the timestamp for this frame
-		if(!gst_base_src_get_do_timestamp(GST_BASE_SRC(psrc))){
-			GST_BUFFER_PTS(*buf) = src->last_frame_time;  // convert ms to ns
-			GST_BUFFER_DTS(*buf) = src->last_frame_time;  // convert ms to ns
-		}
-		GST_BUFFER_DURATION(*buf) = src->duration;
-		GST_DEBUG_OBJECT(src, "pts, dts: %" GST_TIME_FORMAT ", duration: %d ms", GST_TIME_ARGS (src->last_frame_time), GST_TIME_AS_MSECONDS(src->duration));
+	// If we do not use gst_base_src_set_do_timestamp() we need to add timestamps manually
+	src->last_frame_time += src->duration;   // Get the timestamp for this frame
+	if(!gst_base_src_get_do_timestamp(GST_BASE_SRC(psrc))){
+		GST_BUFFER_PTS(*buf) = src->last_frame_time;  // convert ms to ns
+		GST_BUFFER_DTS(*buf) = src->last_frame_time;  // convert ms to ns
+	}
+	GST_BUFFER_DURATION(*buf) = src->duration;
+	GST_DEBUG_OBJECT(src, "pts, dts: %" GST_TIME_FORMAT ", duration: %d ms", GST_TIME_ARGS (src->last_frame_time), GST_TIME_AS_MSECONDS(src->duration));
 
-		// count frames, and send EOS when required frame number is reached
-		GST_BUFFER_OFFSET(*buf) = src->n_frames;  // from videotestsrc
-		src->n_frames++;
-		GST_BUFFER_OFFSET_END(*buf) = src->n_frames;  // from videotestsrc
-		if (psrc->parent.num_buffers>0)  // If we were asked for a specific number of buffers, stop when complete
-			if (G_UNLIKELY(src->n_frames >= psrc->parent.num_buffers))
-				return GST_FLOW_EOS;
+	// count frames, and send EOS when required frame number is reached
+	GST_BUFFER_OFFSET(*buf) = src->n_frames;  // from videotestsrc
+	src->n_frames++;
+	GST_BUFFER_OFFSET_END(*buf) = src->n_frames;  // from videotestsrc
+	if (psrc->parent.num_buffers>0)  // If we were asked for a specific number of buffers, stop when complete
+		if (G_UNLIKELY(src->n_frames >= psrc->parent.num_buffers))
+			return GST_FLOW_EOS;
 
 	return GST_FLOW_OK;
-  fail:
-  return GST_FLOW_ERROR;
+	fail:
+	return GST_FLOW_ERROR;
 }
 #endif // OVERRIDE_CREATE
 
@@ -552,7 +560,7 @@ plugin_init (GstPlugin * plugin)
 
   /* FIXME Remember to set the rank if it's an element that is meant
      to be autoplugged by decodebin. */
-  return gst_element_register (plugin, "gstspinnakersrc", GST_RANK_NONE,
+  return gst_element_register (plugin, "spinnakersrc", GST_RANK_NONE,
       GST_TYPE_SPINNAKER_SRC);
 
 }
@@ -568,7 +576,7 @@ plugin_init (GstPlugin * plugin)
 #define PACKAGE "GST Spinnaker"
 #endif
 #ifndef PACKAGE_NAME
-#define PACKAGE_NAME "spinnaker src"
+#define PACKAGE_NAME "spinnakersrc"
 #endif
 #ifndef GST_PACKAGE_ORIGIN
 #define GST_PACKAGE_ORIGIN "github.com/thompd27"
@@ -577,5 +585,5 @@ plugin_init (GstPlugin * plugin)
 GST_PLUGIN_DEFINE (GST_VERSION_MAJOR,
     GST_VERSION_MINOR,
     spinnaker,
-    "plugin for interfacing with point grey cameras based on the spinnaker API",
+    "plugin for interfacing with FLIR machine vision cameras based on the spinnaker API",
     plugin_init, VERSION, "LGPL", PACKAGE_NAME, GST_PACKAGE_ORIGIN);
