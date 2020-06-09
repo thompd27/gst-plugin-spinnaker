@@ -37,7 +37,7 @@
 //#define OVERRIDE_FILL  !!! NOT IMPLEMENTED !!!
 #define OVERRIDE_CREATE
 
-#include <unistd.h> // for usleep
+//#include <unistd.h> // for usleep
 #include <string.h> // for memcpy
 #include <math.h>  // for pow
 #ifdef HAVE_CONFIG_H
@@ -47,7 +47,7 @@
 #include <gst/gst.h>
 #include <gst/base/gstpushsrc.h>
 #include <gst/video/video.h>
-
+#include <stdio.h>
 #include "gstspinnaker.h"
 
 GST_DEBUG_CATEGORY_STATIC (gst_spinnaker_src_debug);
@@ -107,11 +107,12 @@ enum
 #define DEFAULT_PROP_LUT2_GAIN		    1.501   
 #define DEFAULT_PROP_MAXFRAMERATE       25
 #define DEFAULT_PROP_GAMMA			    1.5
-#define DEFAULT_PROP_WIDTH 				4000
-#define DEFAULT_PROP_HEIGHT			    3000
+#define DEFAULT_PROP_WIDTH 				800
+#define DEFAULT_PROP_HEIGHT			    600
+#define MAX_BUFF_LEN 256
 
 #define DEFAULT_GST_VIDEO_FORMAT GST_VIDEO_FORMAT_GRAY8
-#define DEFAULT_FLYCAP_VIDEO_FORMAT FC2_PIXEL_FORMAT_RGB8
+//#define DEFAULT_FLYCAP_VIDEO_FORMAT FC2_PIXEL_FORMAT_RGB8
 // Put matching type text in the pad template below
 
 // pad template
@@ -132,6 +133,12 @@ static GstStaticPadTemplate gst_spinnaker_src_template =
 	}\
 }
 
+// This function configures the camera to add chunk data to each image. It does
+// this by enabling each type of chunk data before enabling chunk data mode.
+// When chunk data is turned on, the data is made available in both the nodemap
+// and each image.
+
+
 G_DEFINE_TYPE_WITH_CODE (GstSpinnakerSrc, gst_spinnaker_src, GST_TYPE_PUSH_SRC,
     GST_DEBUG_CATEGORY_INIT (GST_CAT_DEFAULT, "spinnaker", 0,
         "debug category for spinnaker element"));
@@ -144,18 +151,231 @@ bool8_t IsAvailableAndWritable(spinNodeHandle hNode, char nodeName[])
     err = spinNodeIsAvailable(hNode, &pbAvailable);
     if (err != SPINNAKER_ERR_SUCCESS)
     {
-        printf("Unable to retrieve node availability (%s node), with error %d...\n\n", nodeName, err);
+        //printf("Unable to retrieve node availability (%s node), with error %d...\n\n", nodeName, err);
     }
 
     bool8_t pbWritable = False;
     err = spinNodeIsWritable(hNode, &pbWritable);
     if (err != SPINNAKER_ERR_SUCCESS)
     {
-        printf("Unable to retrieve node writability (%s node), with error %d...\n\n", nodeName, err);
+        //printf("Unable to retrieve node writability (%s node), with error %d...\n\n", nodeName, err);
     }
     return pbWritable && pbAvailable;
 }
 
+// This function helps to check if a node is available and readable
+bool8_t IsAvailableAndReadable(spinNodeHandle hNode, char nodeName[])
+{
+	bool8_t pbAvailable = False;
+	spinError err = SPINNAKER_ERR_SUCCESS;
+	err = spinNodeIsAvailable(hNode, &pbAvailable);
+	if (err != SPINNAKER_ERR_SUCCESS)
+	{
+		printf("Unable to retrieve node availability (%s node), with error %d...\n\n", nodeName, err);
+	}
+
+	bool8_t pbReadable = False;
+	err = spinNodeIsReadable(hNode, &pbReadable);
+	if (err != SPINNAKER_ERR_SUCCESS)
+	{
+		printf("Unable to retrieve node readability (%s node), with error %d...\n\n", nodeName, err);
+	}
+	return pbReadable && pbAvailable;
+}
+
+
+spinError ConfigureChunkData(spinNodeMapHandle hNodeMap)
+{
+	spinError err = SPINNAKER_ERR_SUCCESS;
+
+	unsigned int i = 0;
+
+	//printf("\n\n*** CONFIGURING CHUNK DATA ***\n\n");
+
+	//
+	// Activate chunk mode
+	//
+	// *** NOTES ***
+	// Once enabled, chunk data will be available at the end of the payload of
+	// every image captured until it is disabled. Chunk data can also be
+	// retrieved from the nodemap.
+	//
+	spinNodeHandle hChunkModeActive = NULL;
+
+	err = spinNodeMapGetNode(hNodeMap, "ChunkModeActive", &hChunkModeActive);
+
+	if (err != SPINNAKER_ERR_SUCCESS)
+	{
+		//printf("Unable to activate chunk mode. Aborting with error %d...\n\n", err);
+		return err;
+	}
+
+	//check if available and writable
+	if (IsAvailableAndWritable(hChunkModeActive, "ChunkModeActive"))
+	{
+		err = spinBooleanSetValue(hChunkModeActive, True);
+		if (err != SPINNAKER_ERR_SUCCESS)
+		{
+			//printf("Unable to activate chunk mode. Aborting with error %d...\n\n", err);
+			return err;
+		}
+	}
+	else
+	{
+		//PrintRetrieveNodeFailure("node", "ChunkModeActive");
+		return SPINNAKER_ERR_ACCESS_DENIED;
+	}
+
+	//printf("Chunk mode activated...\n");
+
+	//
+	// Enable all types of chunk data
+	//
+	// *** NOTES ***
+	// Enabling chunk data requires working with nodes: "ChunkSelector" is an
+	// enumeration selector node and "ChunkEnable" is a boolean. It requires
+	// retrieving the selector node (which is of enumeration node type),
+	// selecting the entry of the chunk data to be enabled, retrieving the
+	// corresponding boolean, and setting it to true.
+	//
+	// In this example, all chunk data is enabled, so these steps are performed
+	// in a loop. Once this is complete, chunk mode still needs to be activated.
+	//
+	spinNodeHandle hChunkSelector = NULL;
+	size_t numEntries = 0;
+
+	// Retrieve selector node, check if available and readable and writable
+	err = spinNodeMapGetNode(hNodeMap, "ChunkSelector", &hChunkSelector);
+
+	if (err != SPINNAKER_ERR_SUCCESS)
+	{
+		//printf("Unable to retrieve chunk selector entries. Aborting with error %d...\n\n", err);
+		return err;
+	}
+
+	// Retrieve number of entries
+	if (IsAvailableAndReadable(hChunkSelector, "ChunkSelector"))
+	{
+		err = spinEnumerationGetNumEntries(hChunkSelector, &numEntries);
+		if (err != SPINNAKER_ERR_SUCCESS)
+		{
+			//printf("Unable to retrieve number of entries. Aborting with error %d...\n\n", err);
+			return err;
+		}
+	}
+	else
+	{
+		//PrintRetrieveNodeFailure("node", "ChunkSelector");
+		return SPINNAKER_ERR_ACCESS_DENIED;
+	}
+
+	printf("Enabling entries...\n");
+
+
+	for (i = 0; i < numEntries; i++)
+	{
+		// Retrieve entry node
+		spinNodeHandle hEntry = NULL;
+
+		err = spinEnumerationGetEntryByIndex(hChunkSelector, i, &hEntry);
+		if (err != SPINNAKER_ERR_SUCCESS)
+		{
+			//printf("\tUnable to enable chunk entry (error %d)...\n\n", err);
+			continue;
+		}
+
+		// Check if available and readable, retrieve entry name
+		char entryName[MAX_BUFF_LEN];
+		size_t lenEntryName = MAX_BUFF_LEN;
+
+		if (IsAvailableAndReadable(hEntry, "ChunkEntry"))
+		{
+			err = spinNodeGetDisplayName(hEntry, entryName, &lenEntryName);
+			if (err != SPINNAKER_ERR_SUCCESS)
+			{
+				//printf("\t%s: unable to retrieve chunk entry display name (error %d)...\n", entryName, err);
+				//strcpy(entryName, "Unknown");
+			}
+		}
+		else
+		{
+			//PrintRetrieveNodeFailure("entry", "ChunkEntry");
+			//strcpy(entryName, "Unknown");
+			continue;
+		}
+		// Retrieve enum entry integer value
+		int64_t value = 0;
+
+		err = spinEnumerationEntryGetIntValue(hEntry, &value);
+
+		if (err != SPINNAKER_ERR_SUCCESS)
+		{
+			//printf("\t%s: unable to get chunk entry value (error %d)...\n", entryName, err);
+			continue;
+		}
+
+		// Set integer value
+		if (IsAvailableAndWritable(hChunkSelector, "ChunkSelector"))
+		{
+			err = spinEnumerationSetIntValue(hChunkSelector, value);
+			if (err != SPINNAKER_ERR_SUCCESS)
+			{
+				//printf("\t%s: unable to set chunk entry value (error %d)...\n", entryName, err);
+				continue;
+			}
+		}
+		else
+		{
+			//PrintRetrieveNodeFailure("node", "ChunkSelector");
+			return SPINNAKER_ERR_ACCESS_DENIED;
+		}
+
+		// Retrieve corresponding chunk enable node
+		spinNodeHandle hChunkEnable = NULL;
+
+		err = spinNodeMapGetNode(hNodeMap, "ChunkEnable", &hChunkEnable);
+		if (err != SPINNAKER_ERR_SUCCESS)
+		{
+			//printf("\t%s: unable to get entry from nodemap (error %d)...\n", entryName, err);
+			continue;
+		}
+
+		// Retrieve chunk enable value and set to true if necessary
+		bool8_t isEnabled = False;
+
+		if (IsAvailableAndWritable(hChunkEnable, "ChunkEnable"))
+		{
+			err = spinBooleanGetValue(hChunkEnable, &isEnabled);
+			if (err != SPINNAKER_ERR_SUCCESS)
+			{
+				//printf("\t%s: unable to get chunk entry boolean value (error %d)...\n", entryName, err);
+				continue;
+			}
+		}
+		else
+		{
+			//PrintRetrieveNodeFailure("node", "ChunkEnable");
+			continue;
+		}
+		// Consider the case in which chunk data is enabled but not writable
+		if (!isEnabled)
+		{
+			// Set chunk enable value to true
+
+			err = spinBooleanSetValue(hChunkEnable, True);
+			if (err != SPINNAKER_ERR_SUCCESS)
+			{
+				//printf("\t%s: unable to set chunk entry boolean value (error %d)...\n", entryName, err);
+				continue;
+			}
+
+		}
+
+		//printf("\t%s: enabled\n", entryName);
+	}
+
+	return err;
+}
 /* class initialisation */
 static void
 gst_spinnaker_src_class_init (GstSpinnakerSrcClass * klass)
@@ -250,10 +470,12 @@ gst_spinnaker_src_set_property (GObject * object, guint property_id,
 
 	src = GST_SPINNAKER_SRC (object);
 
+	/*
 	spinImage hCamera = NULL;
 	spinNodeMapHandle hNodeMap = NULL;
   	EXEANDCHECK(spinCameraListGet(src->hCameraList, src->cameraID, &hCamera));
 	EXEANDCHECK(spinCameraGetNodeMap(hCamera, &hNodeMap));
+	*/
 	spinNodeHandle hWidth = NULL;
 	int64_t maxWidth = 0;
 	spinNodeHandle hHeight = NULL;
@@ -264,7 +486,7 @@ gst_spinnaker_src_set_property (GObject * object, guint property_id,
 		GST_DEBUG_OBJECT (src, "camera id: %d", src->cameraID);
 		break;
 	case PROP_WIDTH:
-
+		/*
 		EXEANDCHECK(spinNodeMapGetNode(hNodeMap, "Width", &hWidth));
 
 		// Retrieve maximum width
@@ -281,9 +503,10 @@ gst_spinnaker_src_set_property (GObject * object, guint property_id,
 				src->nWidth = param;
 			}
 		}
+		*/
 		break;
 	case PROP_HEIGHT:
-
+		/*
 		EXEANDCHECK(spinNodeMapGetNode(hNodeMap, "Height", &hHeight));
 
 		// Retrieve maximum width
@@ -300,6 +523,7 @@ gst_spinnaker_src_set_property (GObject * object, guint property_id,
 				src->nHeight = param;
 			}
 		}
+		*/
 		break;
 	default:
 		G_OBJECT_WARN_INVALID_PROPERTY_ID (object, property_id, pspec);
@@ -373,7 +597,7 @@ gst_spinnaker_src_start (GstBaseSrc * bsrc)
 	
 	// display error when no camera has been found
 	if (numCameras==0){
-		GST_ERROR_OBJECT(src, "No Flycapture device found.");
+		GST_ERROR_OBJECT(src, "No Point Grey device found.");
 		
     // Clear and destroy camera list before releasing system
     EXEANDCHECK(spinCameraListClear(src->hCameraList));
@@ -394,10 +618,28 @@ gst_spinnaker_src_start (GstBaseSrc * bsrc)
 	GST_DEBUG_OBJECT (src, "initializing camera");
     EXEANDCHECK(spinCameraInit(hCamera));
 
+	//set camera to send back timestamp information
+	spinNodeMapHandle hNodeMap = NULL;
+	EXEANDCHECK(spinCameraGetNodeMap(hCamera, &hNodeMap));
+	err = ConfigureChunkData(hNodeMap);
+	if (err != SPINNAKER_ERR_SUCCESS) { goto fail; };
 	//starts camera acquisition. Doesn't actually fill the gstreamer buffer. see create function
 	GST_DEBUG_OBJECT (src, "starting acquisition");
     EXEANDCHECK(spinCameraBeginAcquisition(hCamera));
+
+	//grab 1 image to set initial timestamp
+	spinImage hResultImage = NULL;
+	EXEANDCHECK(spinCameraGetNextImage(hCamera, &hResultImage));
+	bool8_t isIncomplete = False;
+	bool8_t hasFailed = False;
+	//check if image is complete 
+	//WARNING: This returns a boolean and is not handled if the image is incomplete
+	EXEANDCHECK(spinImageIsIncomplete(hResultImage, &isIncomplete));
+	int64_t timestamp = 0;
+	EXEANDCHECK(spinImageChunkDataGetIntValue(hResultImage, "ChunkTimestamp", &timestamp));
+	src->last_frame_time = timestamp;
 	EXEANDCHECK(spinCameraRelease(hCamera));
+	EXEANDCHECK(spinImageRelease(hResultImage));
 	// NOTE:
 	// from now on, the "deviceContext" handle can be used to access the camera board.
 	// use fc2DestroyContext to end the usage
@@ -455,6 +697,30 @@ gst_spinnaker_src_get_caps (GstBaseSrc * bsrc, GstCaps * filter)
 
 	vinfo.width = src->nWidth;
 	vinfo.height = src->nHeight;
+	spinImage hCamera = NULL;
+	spinNodeMapHandle hNodeMap = NULL;
+	EXEANDCHECK(spinCameraListGet(src->hCameraList, src->cameraID, &hCamera));
+	EXEANDCHECK(spinCameraGetNodeMap(hCamera, &hNodeMap));
+	spinNodeHandle hWidth = NULL;
+	int64_t camWidth = 0;
+	spinNodeHandle hHeight = NULL;
+	int64_t camHeight = 0;
+
+	EXEANDCHECK(spinNodeMapGetNode(hNodeMap, "Width", &hWidth));
+
+	// Retrieve maximum width
+	if (IsAvailableAndReadable(hWidth, "Width"))
+	{
+		EXEANDCHECK(spinIntegerGetValue(hWidth, &camWidth));
+		vinfo.width = camWidth;
+	}
+
+	if (IsAvailableAndReadable(hHeight, "Height"))
+	{
+		EXEANDCHECK(spinIntegerGetValue(hHeight, &camHeight));
+		vinfo.height = camHeight;
+	}
+
 	vinfo.fps_n = 0; //0 means variable FPS
 	vinfo.fps_d = 1;
 	vinfo.interlace_mode = GST_VIDEO_INTERLACE_MODE_PROGRESSIVE;
@@ -465,6 +731,9 @@ gst_spinnaker_src_get_caps (GstBaseSrc * bsrc, GstCaps * filter)
 	GST_DEBUG_OBJECT (src, "The caps are %" GST_PTR_FORMAT, caps);
 
 	return caps;
+
+fail:
+	return 0;
 }
 
 static gboolean
@@ -472,6 +741,40 @@ gst_spinnaker_src_set_caps (GstBaseSrc * bsrc, GstCaps * caps)
 {
 	GstSpinnakerSrc *src = GST_SPINNAKER_SRC (bsrc);
 	GstVideoInfo vinfo;
+	gst_video_info_init(&vinfo);
+
+	vinfo.width = src->nWidth;
+	vinfo.height = src->nHeight;
+	spinImage hCamera = NULL;
+	spinNodeMapHandle hNodeMap = NULL;
+	EXEANDCHECK(spinCameraListGet(src->hCameraList, src->cameraID, &hCamera));
+	EXEANDCHECK(spinCameraGetNodeMap(hCamera, &hNodeMap));
+	spinNodeHandle hWidth = NULL;
+	int64_t camWidth = 0;
+	spinNodeHandle hHeight = NULL;
+	int64_t camHeight = 0;
+
+	EXEANDCHECK(spinNodeMapGetNode(hNodeMap, "Width", &hWidth));
+	if (IsAvailableAndReadable(hWidth, "Width"))
+	{
+		EXEANDCHECK(spinIntegerGetValue(hWidth, &camWidth));
+		vinfo.width = camWidth;
+		GST_DEBUG_OBJECT(src, "The width being set is %" GST_PTR_FORMAT, vinfo.width);
+	}
+
+	if (IsAvailableAndReadable(hHeight, "Height"))
+	{
+		EXEANDCHECK(spinIntegerGetValue(hHeight, &camHeight));
+		vinfo.height = camHeight;
+		GST_DEBUG_OBJECT(src, "The width being set is %" GST_PTR_FORMAT, vinfo.height);
+	}
+	
+	vinfo.fps_n = 0; //0 means variable FPS
+	vinfo.fps_d = 1;
+	vinfo.interlace_mode = GST_VIDEO_INTERLACE_MODE_PROGRESSIVE;
+	vinfo.finfo = gst_video_format_get_info(DEFAULT_GST_VIDEO_FORMAT);
+
+	caps = gst_video_info_to_caps(&vinfo);
 
 	//Currently using fixed caps
 	GST_DEBUG_OBJECT (src, "The caps being set are %" GST_PTR_FORMAT, caps);
@@ -508,9 +811,10 @@ gst_spinnaker_src_create (GstPushSrc * psrc, GstBuffer ** buf)
 	//check if image is complete 
 	//WARNING: This returns a boolean and is not handled if the image is incomplete
 	EXEANDCHECK(spinImageIsIncomplete(hResultImage, &isIncomplete));
-
+	int64_t timestamp = 0;
+	EXEANDCHECK(spinImageChunkDataGetIntValue(hResultImage, "ChunkTimestamp", &timestamp));
 	// Create a new buffer for the image
-	*buf = gst_buffer_new_and_alloc (src->nHeight * src->nWidth * src->nBytesPerPixel);
+	*buf = gst_buffer_new_and_alloc ((double)src->nHeight * (double)src->nWidth * (double)src->nBytesPerPixel);
 
 	gst_buffer_map (*buf, &minfo, GST_MAP_WRITE);
 
@@ -522,20 +826,23 @@ gst_spinnaker_src_create (GstPushSrc * psrc, GstBuffer ** buf)
 	EXEANDCHECK(spinImageGetData(hResultImage, &data)); 
 
 	//copy image data into gstreamer buffer
-	for (int i = 0; i < src->nHeight; i++) {
-		memcpy (minfo.data + i * src->gst_stride, data + i * src->nPitch, src->nPitch);
+	for (int64_t i = 0; i < src->nHeight; i++) {
+		memcpy (minfo.data + i * src->gst_stride, (void*)((int)data + i * src->nPitch), src->nPitch);
 	}
 
 	//release image and buffer
 	EXEANDCHECK(spinImageRelease(hResultImage));
 	gst_buffer_unmap (*buf, &minfo);
 
-    src->duration = 1000000000.0/src->framerate; 
+    //src->duration = 1000000000.0/src->framerate; 
+	src->duration = timestamp - src->last_frame_time;
+	src->last_frame_time = timestamp;
+	src->stream_time += src->duration;
 	// If we do not use gst_base_src_set_do_timestamp() we need to add timestamps manually
-	src->last_frame_time += src->duration;   // Get the timestamp for this frame
+	//src->last_frame_time += src->duration;   // Get the timestamp for this frame
 	if(!gst_base_src_get_do_timestamp(GST_BASE_SRC(psrc))){
-		GST_BUFFER_PTS(*buf) = src->last_frame_time;  // convert ms to ns
-		GST_BUFFER_DTS(*buf) = src->last_frame_time;  // convert ms to ns
+		GST_BUFFER_PTS(*buf) = src->stream_time;  // convert ms to ns
+		GST_BUFFER_DTS(*buf) = src->stream_time;  // convert ms to ns
 	}
 	GST_BUFFER_DURATION(*buf) = src->duration;
 	GST_DEBUG_OBJECT(src, "pts, dts: %" GST_TIME_FORMAT ", duration: %d ms", GST_TIME_ARGS (src->last_frame_time), GST_TIME_AS_MSECONDS(src->duration));

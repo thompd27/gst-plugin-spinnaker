@@ -15,3 +15,7 @@ config.guess
 compile
 depcomp
 stamp-h1
+
+Gst-Spinnaker/x64/
+
+Gst-Spinnaker/.vs/
