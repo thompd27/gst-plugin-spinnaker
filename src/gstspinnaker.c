@@ -640,6 +640,10 @@ gst_spinnaker_src_start (GstBaseSrc * bsrc)
 	src->last_frame_time = timestamp;
 	EXEANDCHECK(spinCameraRelease(hCamera));
 	EXEANDCHECK(spinImageRelease(hResultImage));
+
+	spinCameraListClear(src->hCameraList);
+
+	spinCameraListDestroy(src->hCameraList);
 	// NOTE:
 	// from now on, the "deviceContext" handle can be used to access the camera board.
 	// use fc2DestroyContext to end the usage
@@ -668,6 +672,13 @@ gst_spinnaker_src_stop (GstBaseSrc * bsrc)
 
 	GST_DEBUG_OBJECT (src, "stop");
 	spinImage hCamera = NULL;
+	//grab system reference
+	EXEANDCHECK(spinSystemGetInstance(&src->hSystem));
+
+	//query available cameras
+	EXEANDCHECK(spinCameraListCreateEmpty(&src->hCameraList));
+	GST_DEBUG_OBJECT(src, "getting camera list");
+	EXEANDCHECK(spinSystemGetCameras(src->hSystem, src->hCameraList));
 	EXEANDCHECK(spinCameraListGet(src->hCameraList, src->cameraID, &hCamera));
   	EXEANDCHECK(spinCameraEndAcquisition(hCamera));
   	EXEANDCHECK(spinCameraDeInit(hCamera));
@@ -699,6 +710,13 @@ gst_spinnaker_src_get_caps (GstBaseSrc * bsrc, GstCaps * filter)
 	vinfo.height = src->nHeight;
 	spinImage hCamera = NULL;
 	spinNodeMapHandle hNodeMap = NULL;
+	//grab system reference
+	EXEANDCHECK(spinSystemGetInstance(&src->hSystem));
+
+	//query available cameras
+	EXEANDCHECK(spinCameraListCreateEmpty(&src->hCameraList));
+	GST_DEBUG_OBJECT(src, "getting camera list");
+	EXEANDCHECK(spinSystemGetCameras(src->hSystem, src->hCameraList));
 	EXEANDCHECK(spinCameraListGet(src->hCameraList, src->cameraID, &hCamera));
 	EXEANDCHECK(spinCameraGetNodeMap(hCamera, &hNodeMap));
 	spinNodeHandle hWidth = NULL;
@@ -729,10 +747,13 @@ gst_spinnaker_src_get_caps (GstBaseSrc * bsrc, GstCaps * filter)
 	caps = gst_video_info_to_caps(&vinfo);
 
 	GST_DEBUG_OBJECT (src, "The caps are %" GST_PTR_FORMAT, caps);
-
+	EXEANDCHECK(spinCameraListClear(src->hCameraList));
+	EXEANDCHECK(spinCameraListDestroy(src->hCameraList));
 	return caps;
 
 fail:
+	EXEANDCHECK(spinCameraListClear(src->hCameraList));
+	EXEANDCHECK(spinCameraListDestroy(src->hCameraList));
 	return 0;
 }
 
@@ -747,6 +768,13 @@ gst_spinnaker_src_set_caps (GstBaseSrc * bsrc, GstCaps * caps)
 	vinfo.height = src->nHeight;
 	spinImage hCamera = NULL;
 	spinNodeMapHandle hNodeMap = NULL;
+	//grab system reference
+	EXEANDCHECK(spinSystemGetInstance(&src->hSystem));
+
+	//query available cameras
+	EXEANDCHECK(spinCameraListCreateEmpty(&src->hCameraList));
+	GST_DEBUG_OBJECT(src, "getting camera list");
+	EXEANDCHECK(spinSystemGetCameras(src->hSystem, src->hCameraList));
 	EXEANDCHECK(spinCameraListGet(src->hCameraList, src->cameraID, &hCamera));
 	EXEANDCHECK(spinCameraGetNodeMap(hCamera, &hNodeMap));
 	spinNodeHandle hWidth = NULL;
@@ -775,7 +803,8 @@ gst_spinnaker_src_set_caps (GstBaseSrc * bsrc, GstCaps * caps)
 	vinfo.finfo = gst_video_format_get_info(DEFAULT_GST_VIDEO_FORMAT);
 
 	caps = gst_video_info_to_caps(&vinfo);
-
+	EXEANDCHECK(spinCameraListClear(src->hCameraList));
+	EXEANDCHECK(spinCameraListDestroy(src->hCameraList));
 	//Currently using fixed caps
 	GST_DEBUG_OBJECT (src, "The caps being set are %" GST_PTR_FORMAT, caps);
 	src->acq_started = TRUE;
@@ -787,6 +816,8 @@ gst_spinnaker_src_set_caps (GstBaseSrc * bsrc, GstCaps * caps)
 	return FALSE;
 
 	fail:
+	EXEANDCHECK(spinCameraListClear(src->hCameraList));
+	EXEANDCHECK(spinCameraListDestroy(src->hCameraList));
 	return FALSE;
 }
 
@@ -804,7 +835,8 @@ gst_spinnaker_src_create (GstPushSrc * psrc, GstBuffer ** buf)
 	EXEANDCHECK(spinCameraListGet(src->hCameraList, src->cameraID, &hCamera));
 	EXEANDCHECK(spinCameraGetNextImage(hCamera, &hResultImage));
 	EXEANDCHECK(spinCameraRelease(hCamera));
-
+	EXEANDCHECK(spinCameraListClear(src->hCameraList));
+	EXEANDCHECK(spinCameraListDestroy(src->hCameraList));
 	bool8_t isIncomplete = False;
 	bool8_t hasFailed = False;
 
@@ -851,12 +883,15 @@ gst_spinnaker_src_create (GstPushSrc * psrc, GstBuffer ** buf)
 	GST_BUFFER_OFFSET(*buf) = src->n_frames;  // from videotestsrc
 	src->n_frames++;
 	GST_BUFFER_OFFSET_END(*buf) = src->n_frames;  // from videotestsrc
+
 	if (psrc->parent.num_buffers>0)  // If we were asked for a specific number of buffers, stop when complete
 		if (G_UNLIKELY(src->n_frames >= psrc->parent.num_buffers))
 			return GST_FLOW_EOS;
 
 	return GST_FLOW_OK;
 	fail:
+	EXEANDCHECK(spinCameraListClear(src->hCameraList));
+	EXEANDCHECK(spinCameraListDestroy(src->hCameraList));
 	return GST_FLOW_ERROR;
 }
 #endif // OVERRIDE_CREATE
