@@ -700,6 +700,7 @@ static GstCaps *
 gst_spinnaker_src_get_caps (GstBaseSrc * bsrc, GstCaps * filter)
 {
 	GstSpinnakerSrc *src = GST_SPINNAKER_SRC (bsrc);
+	GST_DEBUG_OBJECT(src, "get caps");
 	GstCaps *caps;
 
 	GstVideoInfo vinfo;
@@ -709,15 +710,14 @@ gst_spinnaker_src_get_caps (GstBaseSrc * bsrc, GstCaps * filter)
 	vinfo.width = src->nWidth;
 	vinfo.height = src->nHeight;
 	spinImage hCamera = NULL;
+	spinCameraList camList = NULL;
 	spinNodeMapHandle hNodeMap = NULL;
 	//grab system reference
 	EXEANDCHECK(spinSystemGetInstance(&src->hSystem));
-
 	//query available cameras
-	EXEANDCHECK(spinCameraListCreateEmpty(&src->hCameraList));
-	GST_DEBUG_OBJECT(src, "getting camera list");
-	EXEANDCHECK(spinSystemGetCameras(src->hSystem, src->hCameraList));
-	EXEANDCHECK(spinCameraListGet(src->hCameraList, src->cameraID, &hCamera));
+	EXEANDCHECK(spinCameraListCreateEmpty(camList));
+	EXEANDCHECK(spinSystemGetCameras(src->hSystem, camList));
+	EXEANDCHECK(spinCameraListGet(camList, src->cameraID, &hCamera));
 	EXEANDCHECK(spinCameraGetNodeMap(hCamera, &hNodeMap));
 	spinNodeHandle hWidth = NULL;
 	int64_t camWidth = 0;
@@ -747,13 +747,13 @@ gst_spinnaker_src_get_caps (GstBaseSrc * bsrc, GstCaps * filter)
 	caps = gst_video_info_to_caps(&vinfo);
 
 	GST_DEBUG_OBJECT (src, "The caps are %" GST_PTR_FORMAT, caps);
-	EXEANDCHECK(spinCameraListClear(src->hCameraList));
-	EXEANDCHECK(spinCameraListDestroy(src->hCameraList));
+	EXEANDCHECK(spinCameraListClear(camList));
+	EXEANDCHECK(spinCameraListDestroy(camList));
 	return caps;
 
 fail:
-	EXEANDCHECK(spinCameraListClear(src->hCameraList));
-	EXEANDCHECK(spinCameraListDestroy(src->hCameraList));
+	EXEANDCHECK(spinCameraListClear(camList));
+	EXEANDCHECK(spinCameraListDestroy(camList));
 	return 0;
 }
 
@@ -832,6 +832,12 @@ gst_spinnaker_src_create (GstPushSrc * psrc, GstBuffer ** buf)
 	//query camera and grab next image
 	spinImage hResultImage = NULL;
 	spinImage hCamera = NULL;
+	//grab system reference
+	EXEANDCHECK(spinSystemGetInstance(&src->hSystem));
+
+	//query available cameras
+	EXEANDCHECK(spinCameraListCreateEmpty(&src->hCameraList));
+	EXEANDCHECK(spinSystemGetCameras(src->hSystem, src->hCameraList));
 	EXEANDCHECK(spinCameraListGet(src->hCameraList, src->cameraID, &hCamera));
 	EXEANDCHECK(spinCameraGetNextImage(hCamera, &hResultImage));
 	EXEANDCHECK(spinCameraRelease(hCamera));
