@@ -1,5 +1,5 @@
-/* GStreamer Flycap Plugin
- * Copyright (C) 2015 Gray Cancer Institute
+/* GStreamer Spinnaker Plugin
+ * Copyright (C) 2019 Embry-Riddle Aeronautical University
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Library General Public
@@ -73,7 +73,7 @@ struct _GstSpinnakerSrc
   //unsigned int nRawHeight;  // because of binning the raw image size may be smaller than nHeight
   //unsigned int nRawPitch;  // because of binning the raw image size may be smaller than nHeight
 
-  gint gst_stride;  // Stride/pitch for the GStreamer buffer
+  gint64 gst_stride;  // Stride/pitch for the GStreamer buffer
 
   // gst properties
   gint pixelclock;
@@ -112,6 +112,7 @@ struct _GstSpinnakerSrc
   gint total_timeouts;
   GstClockTime duration;
   GstClockTime last_frame_time;
+  GstClockTime stream_time;
 };
 
 struct _GstSpinnakerSrcClass

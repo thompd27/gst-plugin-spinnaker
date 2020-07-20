@@ -108,7 +108,7 @@ enum
 #define DEFAULT_PROP_MAXFRAMERATE       25
 #define DEFAULT_PROP_GAMMA			    1.5
 #define DEFAULT_PROP_WIDTH 				4000
-#define DEFAULT_PROP_HEIGHT			    3000
+#define DEFAULT_PROP_HEIGHT			    2000
 
 #define DEFAULT_GST_VIDEO_FORMAT GST_VIDEO_FORMAT_GRAY8
 #define DEFAULT_FLYCAP_VIDEO_FORMAT FC2_PIXEL_FORMAT_RGB8
@@ -182,7 +182,7 @@ gst_spinnaker_src_class_init (GstSpinnakerSrcClass * klass)
 
 	gstbasesrc_class->start = GST_DEBUG_FUNCPTR (gst_spinnaker_src_start);
 	gstbasesrc_class->stop = GST_DEBUG_FUNCPTR (gst_spinnaker_src_stop);
-	gstbasesrc_class->get_caps = GST_DEBUG_FUNCPTR (gst_spinnaker_src_get_caps);
+	//gstbasesrc_class->get_caps = GST_DEBUG_FUNCPTR (gst_spinnaker_src_get_caps);
 	gstbasesrc_class->set_caps = GST_DEBUG_FUNCPTR (gst_spinnaker_src_set_caps);
 
 #ifdef OVERRIDE_CREATE
@@ -208,7 +208,7 @@ init_properties(GstSpinnakerSrc * src)
   src->nBytesPerPixel = 1;
   src->binning = 1;
   src->n_frames = 0;
-  src->framerate = 31;
+  src->framerate = 30;
   src->last_frame_time = 0;
   src->nPitch = src->nWidth * src->nBytesPerPixel;
   src->gst_stride = src->nPitch;
@@ -250,10 +250,6 @@ gst_spinnaker_src_set_property (GObject * object, guint property_id,
 
 	src = GST_SPINNAKER_SRC (object);
 
-	spinImage hCamera = NULL;
-	spinNodeMapHandle hNodeMap = NULL;
-  	EXEANDCHECK(spinCameraListGet(src->hCameraList, src->cameraID, &hCamera));
-	EXEANDCHECK(spinCameraGetNodeMap(hCamera, &hNodeMap));
 	spinNodeHandle hWidth = NULL;
 	int64_t maxWidth = 0;
 	spinNodeHandle hHeight = NULL;
@@ -265,41 +261,9 @@ gst_spinnaker_src_set_property (GObject * object, guint property_id,
 		break;
 	case PROP_WIDTH:
 
-		EXEANDCHECK(spinNodeMapGetNode(hNodeMap, "Width", &hWidth));
-
-		// Retrieve maximum width
-		if (IsAvailableAndWritable(hWidth, "Width"))
-		{
-			EXEANDCHECK(spinIntegerGetMax(hWidth, &maxWidth));
-			int64_t param = g_value_get_int(value);
-			if (param > maxWidth){
-				EXEANDCHECK(spinIntegerSetValue(hWidth, maxWidth));
-				src->nWidth = maxWidth;
-			}
-			else {
-				EXEANDCHECK(spinIntegerSetValue(hWidth, param));
-				src->nWidth = param;
-			}
-		}
 		break;
 	case PROP_HEIGHT:
 
-		EXEANDCHECK(spinNodeMapGetNode(hNodeMap, "Height", &hHeight));
-
-		// Retrieve maximum width
-		if (IsAvailableAndWritable(hHeight, "Height"))
-		{
-			EXEANDCHECK(spinIntegerGetMax(hHeight, &maxHeight));
-			int64_t param = g_value_get_int(value);
-			if (param > maxHeight){
-				EXEANDCHECK(spinIntegerSetValue(hHeight, maxHeight));
-				src->nHeight = maxHeight;
-			}
-			else {
-				EXEANDCHECK(spinIntegerSetValue(hWidth, param));
-				src->nHeight = param;
-			}
-		}
 		break;
 	default:
 		G_OBJECT_WARN_INVALID_PROPERTY_ID (object, property_id, pspec);
@@ -520,7 +484,7 @@ gst_spinnaker_src_create (GstPushSrc * psrc, GstBuffer ** buf)
 	//grab pointer to image data	
 	void *data;
 	EXEANDCHECK(spinImageGetData(hResultImage, &data)); 
-
+	GST_DEBUG_OBJECT(src, "starting image copy");
 	//copy image data into gstreamer buffer
 	for (int i = 0; i < src->nHeight; i++) {
 		memcpy (minfo.data + i * src->gst_stride, data + i * src->nPitch, src->nPitch);
