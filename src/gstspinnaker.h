@@ -44,11 +44,10 @@ typedef enum
 
 typedef enum
 {
-	GST_LUT_OFF,
-	GST_LUT_1,
-	GST_LUT_2,
-	GST_LUT_GAMMA
-} LUTType;
+	GST_ROLLING,
+	GST_GLOBAL_RESET,
+	GST_GLOBAL
+} ShutterType;
 
 struct _GstSpinnakerSrc
 {
@@ -60,6 +59,12 @@ struct _GstSpinnakerSrc
 
   // device
   gboolean cameraPresent;
+  gboolean ISP;
+  gboolean exposure_lower_set;
+  gboolean exposure_upper_set;
+  gboolean shutter_set;
+  gboolean offset_x_set;
+  gboolean offset_y_set;
   int lMemId;  // ID of the allocated memory
   unsigned int nWidth;
   unsigned int cameraID;
@@ -68,6 +73,12 @@ struct _GstSpinnakerSrc
   unsigned int nBytesPerPixel;
   unsigned int nPitch;   // Stride in bytes between lines
   unsigned int nImageSize;  // Image size in bytes
+  unsigned int nOffsetX;
+  unsigned int nOffsetY;
+
+  gint exposure_lower;
+  gint exposure_upper;
+  char* shutter;
 
   //unsigned int nRawWidth;  // because of binning the raw image size may be smaller than nWidth
   //unsigned int nRawHeight;  // because of binning the raw image size may be smaller than nHeight
@@ -93,7 +104,7 @@ struct _GstSpinnakerSrc
   WhiteBalanceType whitebalance;
   gboolean WB_in_progress;   // will be >0 when WB in progress, value will be number of frames until we abort WB
   gint WB_progress;   // will be >0 when WB in progress, value will be number of frames until we abort WB
-  LUTType lut;
+  //LUTType lut;
   gint lut_offset[2][3];
   gdouble lut_gain[2];
   gdouble lut_gamma[2];
